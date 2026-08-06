@@ -5,6 +5,7 @@ input_select:
     options:
       - Standby
       - Manual
+      - Manual + Smart Matching
       - Smart Matching
       - Smart Discharge Only
       - Smart Charge Only

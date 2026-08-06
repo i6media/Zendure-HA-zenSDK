@@ -124,6 +124,17 @@ actions:
             id: modus_trigger
           - condition: state
             entity_id: input_select.zendure_operation_mode
+            state: Manual + Smart Matching
+        sequence:
+          - action: rest_command.zendure_stop_with_everything
+            data:
+              sn: "{{ states('sensor.zendure_serial_number') }}"
+        alias: Manual + Smart Matching
+      - conditions:
+          - condition: trigger
+            id: modus_trigger
+          - condition: state
+            entity_id: input_select.zendure_operation_mode
             state: Dynamic Smart Matching
         sequence:
           - action: rest_command.zendure_stop_with_everything
@@ -315,6 +326,9 @@ actions:
               - condition: state
                 entity_id: input_select.zendure_operation_mode
                 state: Smart Matching
+              - condition: state
+                entity_id: input_select.zendure_operation_mode
+                state: Manual + Smart Matching
               - condition: state
                 entity_id: input_select.zendure_operation_mode
                 state: Smart Charge Only
@@ -886,13 +900,61 @@ actions:
           - condition: trigger
             id:
               - aansturing_trigger
+          - condition: template
+            value_template: >-
+              {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                 and states('input_number.zendure_manual_power') | float(0) > 0 }}
+          - condition: numeric_state
+            entity_id: sensor.zendure_power
+            below: -30
+          - condition: template
+            value_template: "{{ states('sensor.zendure_set_discharge_power') | int(0) != 0 }}"
+        sequence:
+          - data:
+              sn: "{{ states('sensor.zendure_serial_number') }}"
+              outputLimit: 0
+            action: rest_command.zendure_x_discharge
+          - action: logbook.log
+            data:
+              message: "⚡Direction change — discharging stopped (floor flipped sign) —"
+              entity_id: input_select.zendure_operation_mode
+              name: " "
+        alias: "Manual + Smart Matching: direction change — stop discharging"
+      - conditions:
+          - condition: trigger
+            id:
+              - aansturing_trigger
+          - condition: template
+            value_template: >-
+              {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                 and states('input_number.zendure_manual_power') | float(0) < 0 }}
+          - condition: numeric_state
+            entity_id: sensor.zendure_power
+            above: 30
+          - condition: template
+            value_template: "{{ states('sensor.zendure_set_charge_power') | int(0) != 0 }}"
+        sequence:
+          - data:
+              sn: "{{ states('sensor.zendure_serial_number') }}"
+              inputLimit: 0
+            action: rest_command.zendure_x_charge
+          - action: logbook.log
+            data:
+              message: "⚡Direction change — charging stopped (floor flipped sign) —"
+              entity_id: input_select.zendure_operation_mode
+              name: " "
+        alias: "Manual + Smart Matching: direction change — stop charging"
+      - conditions:
+          - condition: trigger
+            id:
+              - aansturing_trigger
           - alias: >-
               sensor.home_energy_meter_power bigger then
               input_number.zendure_setting_start_discharging_at
             condition: template
             value_template: |
               {{ states('sensor.home_energy_meter_power') | float(0)
-                 > states('input_number.zendure_setting_start_discharging_at') | float(0) }}
+                 > states('input_number.zendure_setting_start_discharging_at') | float(0) or (is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0) }}
           - condition: state
             entity_id: sensor.zendure_soc_limit_status
             state:
@@ -942,6 +1004,11 @@ actions:
                     entity_id: input_select.zendure_operation_mode
                     state:
                       - Dynamic Trading + Smart Matching
+                  - condition: template
+                    value_template: >-
+                      {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                         and states('input_number.zendure_manual_power') | float(0) <= 0 }}
+                    alias: Manual + Smart Matching (discharge floor)
               - condition: and
                 conditions:
                   - condition: state
@@ -989,8 +1056,8 @@ actions:
                 states('sensor.home_energy_meter_power') | float(0) %}  {% set
                 zendure = states('sensor.zendure_power') | float(0) %}
 
-                {% set totaal = (p1 - zendure - correctie) * factor %} {% set
-                beperkt = [ [totaal, 0] | max, cap ] | min %}
+                {% set vloer = states('input_number.zendure_manual_power') | float(0) | abs if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set
+                beperkt = [ [totaal, vloer, 0] | max, cap ] | min %}
 
                 {{ beperkt | int }}
             action: rest_command.zendure_x_discharge
@@ -1003,8 +1070,7 @@ actions:
                   {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} 
                   {% set zendure = states('sensor.zendure_power') | float(0) %}
 
-                  {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [
-                  [totaal, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
+                  {% set vloer = states('input_number.zendure_manual_power') | float(0) | abs if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
               entity_id: input_select.zendure_operation_mode
               name: " "
         alias: Start discharging at +xxx watt (75% of demand)
@@ -1029,7 +1095,7 @@ actions:
             condition: template
             value_template: |-
               {% set factor = 1.00 %} {% set cap =
-                states('input_number.zendure_setting_max_discharge_power') | float(0) %} {% set correctie = -1 * (states('input_number.zendure_setting_discharge_buffer') | float(0)) %} {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} {% set zendure = states('sensor.zendure_power') | float(0) %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_set_discharge_power') | int(0) %} {{ huidig != target }}
+                states('input_number.zendure_setting_max_discharge_power') | float(0) %} {% set correctie = -1 * (states('input_number.zendure_setting_discharge_buffer') | float(0)) %} {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} {% set zendure = states('sensor.zendure_power') | float(0) %} {% set vloer = states('input_number.zendure_manual_power') | float(0) | abs if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_set_discharge_power') | int(0) %} {{ huidig != target }}
           - condition: numeric_state
             entity_id: sensor.zendure_power
             below: 0
@@ -1051,6 +1117,11 @@ actions:
                     entity_id: input_select.zendure_operation_mode
                     state:
                       - Dynamic Trading + Smart Matching
+                  - condition: template
+                    value_template: >-
+                      {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                         and states('input_number.zendure_manual_power') | float(0) <= 0 }}
+                    alias: Manual + Smart Matching (discharge floor)
               - condition: and
                 conditions:
                   - condition: state
@@ -1098,8 +1169,8 @@ actions:
                 states('sensor.home_energy_meter_power') | float(0) %}  {% set
                 zendure = states('sensor.zendure_power') | float(0) %}
 
-                {% set totaal = (p1 - zendure - correctie) * factor %} {% set
-                beperkt = [ [totaal, 0] | max, cap ] | min %} {{ beperkt | int
+                {% set vloer = states('input_number.zendure_manual_power') | float(0) | abs if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set
+                beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int
                 }}
             action: rest_command.zendure_x_discharge_balancing
           - action: logbook.log
@@ -1111,8 +1182,7 @@ actions:
                   {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} 
                   {% set zendure = states('sensor.zendure_power') | float(0) %}
 
-                  {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [
-                  [totaal, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
+                  {% set vloer = states('input_number.zendure_manual_power') | float(0) | abs if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
               entity_id: input_select.zendure_operation_mode
               name: " "
         alias: During discharge balance to +xxx watt (100% of the demand)
@@ -1132,7 +1202,7 @@ actions:
             condition: template
             value_template: |
               {{ states('sensor.home_energy_meter_power') | float(0)
-                 < states('input_number.zendure_setting_start_charging_at') | float(0) }}
+                 < states('input_number.zendure_setting_start_charging_at') | float(0) or (is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0) }}
           - alias: Lager dan maximaal ingestelde SOC
             condition: template
             value_template: |2-
@@ -1173,6 +1243,11 @@ actions:
                 entity_id: input_select.zendure_operation_mode
                 state:
                   - Dynamic Trading + Smart Matching
+              - condition: template
+                value_template: >-
+                  {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                     and states('input_number.zendure_manual_power') | float(0) >= 0 }}
+                alias: Manual + Smart Matching (charge floor)
           - alias: Minstens 2 automatiseringen na ontladen pas activeren
             condition: or
             conditions:
@@ -1217,8 +1292,8 @@ actions:
                 states('input_number.zendure_setting_charge_buffer') | float(0)
                 %} {% set p1 = states('sensor.home_energy_meter_power') |
                 float(0) %} {% set zendure = states('sensor.zendure_power') |
-                float(0) %} {% set verschil = zendure - p1 - correctie_export %}
-                {% set beperkt = verschil * factor if verschil > 0 else 0 %} {%
+                float(0) %} {% set vloer = states('input_number.zendure_manual_power') | float(0) if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %} {%
                 set beperkt = beperkt if beperkt < cap else cap %} {{ beperkt |
                 int }}
             action: rest_command.zendure_x_charge
@@ -1230,8 +1305,8 @@ actions:
                   {% set correctie_export = states('input_number.zendure_setting_charge_buffer') | float(0) %}
                   {% set p1 = states('sensor.home_energy_meter_power') | float(0) %}
                   {% set zendure = states('sensor.zendure_power') | float(0) %}
-                  {% set verschil = zendure - p1 - correctie_export %}
-                  {% set beperkt = verschil * factor if verschil > 0 else 0 %}
+                  {% set vloer = states('input_number.zendure_manual_power') | float(0) if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                  {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %}
                   {% set beperkt = beperkt if beperkt < cap else cap %}
                   {{ beperkt | int }} watt —
               entity_id: input_select.zendure_operation_mode
@@ -1253,7 +1328,7 @@ actions:
             condition: template
             value_template: |-
               {% set factor = 1.00 %} {% set cap =
-                states('input_number.zendure_setting_max_charge_power') | float(0) %} {% set correctie_export = states('input_number.zendure_setting_charge_buffer') | float(0) %} {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} {% set zendure = states('sensor.zendure_power') | float(0) %} {% set verschil = (zendure - p1 - correctie_export) * factor %} {% set beperkt = [ [verschil, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_set_charge_power') | int(0) %} {{ huidig != target }}
+                states('input_number.zendure_setting_max_charge_power') | float(0) %} {% set correctie_export = states('input_number.zendure_setting_charge_buffer') | float(0) %} {% set p1 = states('sensor.home_energy_meter_power') | float(0) %} {% set zendure = states('sensor.zendure_power') | float(0) %} {% set vloer = states('input_number.zendure_manual_power') | float(0) if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0 else 0 %} {% set verschil = (zendure - p1 - correctie_export) * factor %} {% set beperkt = [ [verschil, vloer, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_set_charge_power') | int(0) %} {{ huidig != target }}
           - alias: Lager dan maximaal ingestelde SOC
             condition: template
             value_template: |2-
@@ -1295,6 +1370,11 @@ actions:
                 entity_id: input_select.zendure_operation_mode
                 state:
                   - Dynamic Trading + Smart Matching
+              - condition: template
+                value_template: >-
+                  {{ is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching')
+                     and states('input_number.zendure_manual_power') | float(0) >= 0 }}
+                alias: Manual + Smart Matching (charge floor)
           - condition: and
             conditions:
               - condition: state
@@ -1322,8 +1402,8 @@ actions:
                 states('input_number.zendure_setting_charge_buffer') | float(0)
                 %} {% set p1 = states('sensor.home_energy_meter_power') |
                 float(0) %} {% set zendure = states('sensor.zendure_power') |
-                float(0) %} {% set verschil = zendure - p1 - correctie_export %}
-                {% set beperkt = verschil * factor if verschil > 0 else 0 %} {%
+                float(0) %} {% set vloer = states('input_number.zendure_manual_power') | float(0) if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %} {%
                 set beperkt = beperkt if beperkt < cap else cap %} {{ beperkt |
                 int }}
             action: rest_command.zendure_x_charge_balancing
@@ -1335,8 +1415,8 @@ actions:
                   {% set correctie_export = states('input_number.zendure_setting_charge_buffer') | float(0) %}
                   {% set p1 = states('sensor.home_energy_meter_power') | float(0) %}
                   {% set zendure = states('sensor.zendure_power') | float(0) %}
-                  {% set verschil = zendure - p1 - correctie_export %}
-                  {% set beperkt = verschil * factor if verschil > 0 else 0 %}
+                  {% set vloer = states('input_number.zendure_manual_power') | float(0) if is_state('input_select.zendure_operation_mode', 'Manual + Smart Matching') and states('input_number.zendure_manual_power') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                  {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %}
                   {% set beperkt = beperkt if beperkt < cap else cap %}
                   {{ beperkt | int }} watt —
               entity_id: input_select.zendure_operation_mode
