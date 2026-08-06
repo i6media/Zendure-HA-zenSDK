@@ -5,6 +5,7 @@ input_select:
     options:
       - Standby
       - Handmatig
+      - Handmatig + NOM
       - Nul op de meter
       - Dynamisch NOM
       - Dynamisch NOM (Duur)

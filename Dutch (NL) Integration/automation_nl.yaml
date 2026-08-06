@@ -123,6 +123,17 @@ actions:
             id: modus_trigger
           - condition: state
             entity_id: input_select.zendure_2400_ac_modus_selecteren
+            state: Handmatig + NOM
+        sequence:
+          - action: rest_command.zendure_stop_met_alles
+            data:
+              sn: "{{ states('sensor.zendure_2400_ac_serienummer') }}"
+        alias: Handmatig + NOM
+      - conditions:
+          - condition: trigger
+            id: modus_trigger
+          - condition: state
+            entity_id: input_select.zendure_2400_ac_modus_selecteren
             state: Dynamisch NOM
         sequence:
           - action: rest_command.zendure_stop_met_alles
@@ -314,6 +325,9 @@ actions:
               - condition: state
                 entity_id: input_select.zendure_2400_ac_modus_selecteren
                 state: Nul op de meter
+              - condition: state
+                entity_id: input_select.zendure_2400_ac_modus_selecteren
+                state: Handmatig + NOM
               - condition: state
                 entity_id: input_select.zendure_2400_ac_modus_selecteren
                 state: Alleen slim opladen
@@ -907,13 +921,61 @@ actions:
           - condition: trigger
             id:
               - aansturing_trigger
+          - condition: template
+            value_template: >-
+              {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                 and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 }}
+          - condition: numeric_state
+            entity_id: sensor.zendure_2400_ac_vermogen_aansturing
+            below: -30
+          - condition: template
+            value_template: "{{ states('sensor.zendure_2400_ac_ingesteld_ontlaadvermogen') | int(0) != 0 }}"
+        sequence:
+          - data:
+              sn: "{{ states('sensor.zendure_2400_ac_serienummer') }}"
+              outputLimit: 0
+            action: rest_command.zendure_x_ontladen
+          - action: logbook.log
+            data:
+              message: "⚡Richtingwissel — ontladen gestopt (vloer wisselde van teken) —"
+              entity_id: input_select.zendure_2400_ac_modus_selecteren
+              name: " "
+        alias: "Handmatig + NOM: richtingwissel — ontladen stoppen"
+      - conditions:
+          - condition: trigger
+            id:
+              - aansturing_trigger
+          - condition: template
+            value_template: >-
+              {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                 and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 }}
+          - condition: numeric_state
+            entity_id: sensor.zendure_2400_ac_vermogen_aansturing
+            above: 30
+          - condition: template
+            value_template: "{{ states('sensor.zendure_2400_ac_ingesteld_oplaadvermogen') | int(0) != 0 }}"
+        sequence:
+          - data:
+              sn: "{{ states('sensor.zendure_2400_ac_serienummer') }}"
+              inputLimit: 0
+            action: rest_command.zendure_x_laden
+          - action: logbook.log
+            data:
+              message: "⚡Richtingwissel — laden gestopt (vloer wisselde van teken) —"
+              entity_id: input_select.zendure_2400_ac_modus_selecteren
+              name: " "
+        alias: "Handmatig + NOM: richtingwissel — laden stoppen"
+      - conditions:
+          - condition: trigger
+            id:
+              - aansturing_trigger
           - alias: >-
               sensor.p1_aansturing_vermogen groter dan
               input_number.zendure_2400_ac_start_ontladen_bij
             condition: template
             value_template: |
               {{ states('sensor.p1_aansturing_vermogen') | float(0)
-                 > states('input_number.zendure_2400_ac_ontladen_starten_bij') | float(0) }}
+                 > states('input_number.zendure_2400_ac_ontladen_starten_bij') | float(0) or (is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0) }}
           - condition: state
             entity_id: sensor.zendure_2400_ac_soc_limiet_status
             state:
@@ -963,6 +1025,11 @@ actions:
                     entity_id: input_select.zendure_2400_ac_modus_selecteren
                     state:
                       - Dynamisch Handelen + NOM
+                  - condition: template
+                    value_template: >-
+                      {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                         and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) <= 0 }}
+                    alias: Handmatig + NOM (ontlaad-ondergrens)
               - condition: and
                 conditions:
                   - condition: state
@@ -1011,8 +1078,8 @@ actions:
                 states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0)
                 %}
 
-                {% set totaal = (p1 - zendure - correctie) * factor %} {% set
-                beperkt = [ [totaal, 0] | max, cap ] | min %}
+                {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) | abs if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set
+                beperkt = [ [totaal, vloer, 0] | max, cap ] | min %}
 
                 {{ beperkt | int }}
             action: rest_command.zendure_x_ontladen
@@ -1026,8 +1093,7 @@ actions:
                   {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} 
                   {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %}
 
-                  {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [
-                  [totaal, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
+                  {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) | abs if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
               entity_id: input_select.zendure_2400_ac_modus_selecteren
               name: ' '
         alias: Start met ontladen bij +xxx watt (75% van de vraag)
@@ -1052,7 +1118,7 @@ actions:
             condition: template
             value_template: |-
               {% set factor = 1.00 %} {% set cap =
-                states('input_number.zendure_2400_ac_max_ontlaadvermogen') | float(0) %} {% set correctie = -1 * (states('input_number.zendure_2400_ac_ontlaadmarge') | float(0)) %} {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_2400_ac_ingesteld_ontlaadvermogen') | int(0) %} {{ huidig != target }}
+                states('input_number.zendure_2400_ac_max_ontlaadvermogen') | float(0) %} {% set correctie = -1 * (states('input_number.zendure_2400_ac_ontlaadmarge') | float(0)) %} {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %} {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) | abs if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_2400_ac_ingesteld_ontlaadvermogen') | int(0) %} {{ huidig != target }}
           - condition: numeric_state
             entity_id: sensor.zendure_2400_ac_vermogen_aansturing
             below: 0
@@ -1074,6 +1140,11 @@ actions:
                     entity_id: input_select.zendure_2400_ac_modus_selecteren
                     state:
                       - Dynamisch Handelen + NOM
+                  - condition: template
+                    value_template: >-
+                      {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                         and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) <= 0 }}
+                    alias: Handmatig + NOM (ontlaad-ondergrens)
               - condition: and
                 conditions:
                   - condition: state
@@ -1122,8 +1193,8 @@ actions:
                 states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0)
                 %}
 
-                {% set totaal = (p1 - zendure - correctie) * factor %} {% set
-                beperkt = [ [totaal, 0] | max, cap ] | min %} {{ beperkt | int
+                {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) | abs if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set
+                beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int
                 }}
             action: rest_command.zendure_x_ontladen_balanceren
           - action: logbook.log
@@ -1136,8 +1207,7 @@ actions:
                   {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} 
                   {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %}
 
-                  {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [
-                  [totaal, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
+                  {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) | abs if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) < 0 else 0 %} {% set totaal = (p1 - zendure - correctie) * factor %} {% set beperkt = [ [totaal, vloer, 0] | max, cap ] | min %} {{ beperkt | int }} watt —
               entity_id: input_select.zendure_2400_ac_modus_selecteren
               name: ' '
         alias: Tijdens ontladen balanceren naar -xxx watt (100% van de vraag)
@@ -1157,7 +1227,7 @@ actions:
             condition: template
             value_template: |
               {{ states('sensor.p1_aansturing_vermogen') | float(0)
-                 < states('input_number.zendure_2400_ac_opladen_starten_bij') | float(0) }}
+                 < states('input_number.zendure_2400_ac_opladen_starten_bij') | float(0) or (is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0) }}
           - alias: Lager dan maximaal ingestelde SOC
             condition: template
             value_template: |2-
@@ -1198,6 +1268,11 @@ actions:
                 entity_id: input_select.zendure_2400_ac_modus_selecteren
                 state:
                   - Dynamisch Handelen + NOM
+              - condition: template
+                value_template: >-
+                  {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                     and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) >= 0 }}
+                alias: Handmatig + NOM (laad-ondergrens)
           - alias: Minstens 2 automatiseringen na ontladen pas activeren
             condition: or
             conditions:
@@ -1243,8 +1318,8 @@ actions:
                 {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0)
                 %} {% set zendure =
                 states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0)
-                %} {% set verschil = zendure - p1 - correctie_export %} {% set
-                beperkt = verschil * factor if verschil > 0 else 0 %} {% set
+                %} {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %} {% set
+                beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %} {% set
                 beperkt = beperkt if beperkt < cap else cap %} {{ beperkt | int
                 }}
             action: rest_command.zendure_x_laden
@@ -1257,8 +1332,8 @@ actions:
                   {% set correctie_export = states('input_number.zendure_2400_ac_oplaadmarge') | float(0) %}
                   {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %}
                   {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %}
-                  {% set verschil = zendure - p1 - correctie_export %}
-                  {% set beperkt = verschil * factor if verschil > 0 else 0 %}
+                  {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                  {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %}
                   {% set beperkt = beperkt if beperkt < cap else cap %}
                   {{ beperkt | int }} watt —
               entity_id: input_select.zendure_2400_ac_modus_selecteren
@@ -1280,7 +1355,7 @@ actions:
             condition: template
             value_template: |-
               {% set factor = 1.00 %} {% set cap =
-                states('input_number.zendure_2400_ac_max_oplaadvermogen') | float(0) %} {% set correctie_export = states('input_number.zendure_2400_ac_oplaadmarge') | float(0) %} {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %} {% set verschil = (zendure - p1 - correctie_export) * factor %} {% set beperkt = [ [verschil, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_2400_ac_ingesteld_oplaadvermogen') | int(0) %} {{ huidig != target }}
+                states('input_number.zendure_2400_ac_max_oplaadvermogen') | float(0) %} {% set correctie_export = states('input_number.zendure_2400_ac_oplaadmarge') | float(0) %} {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %} {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %} {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 else 0 %} {% set verschil = (zendure - p1 - correctie_export) * factor %} {% set beperkt = [ [verschil, vloer, 0] | max, cap ] | min %} {% set target = beperkt | int %} {% set huidig = states('sensor.zendure_2400_ac_ingesteld_oplaadvermogen') | int(0) %} {{ huidig != target }}
           - alias: Lager dan maximaal ingestelde SOC
             condition: template
             value_template: |2-
@@ -1322,6 +1397,11 @@ actions:
                 entity_id: input_select.zendure_2400_ac_modus_selecteren
                 state:
                   - Dynamisch Handelen + NOM
+              - condition: template
+                value_template: >-
+                  {{ is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM')
+                     and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) >= 0 }}
+                alias: Handmatig + NOM (laad-ondergrens)
           - condition: and
             conditions:
               - condition: state
@@ -1350,8 +1430,8 @@ actions:
                 {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0)
                 %} {% set zendure =
                 states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0)
-                %} {% set verschil = zendure - p1 - correctie_export %} {% set
-                beperkt = verschil * factor if verschil > 0 else 0 %} {% set
+                %} {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %} {% set
+                beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %} {% set
                 beperkt = beperkt if beperkt < cap else cap %} {{ beperkt | int
                 }}
             action: rest_command.zendure_x_laden_balanceren
@@ -1364,8 +1444,8 @@ actions:
                   {% set correctie_export = states('input_number.zendure_2400_ac_oplaadmarge') | float(0) %}
                   {% set p1 = states('sensor.p1_aansturing_vermogen') | float(0) %}
                   {% set zendure = states('sensor.zendure_2400_ac_vermogen_aansturing') | float(0) %}
-                  {% set verschil = zendure - p1 - correctie_export %}
-                  {% set beperkt = verschil * factor if verschil > 0 else 0 %}
+                  {% set vloer = states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) if is_state('input_select.zendure_2400_ac_modus_selecteren', 'Handmatig + NOM') and states('input_number.zendure_2400_ac_handmatig_vermogen') | float(0) > 0 else 0 %} {% set verschil = zendure - p1 - correctie_export %}
+                  {% set beperkt = [ verschil * factor if verschil > 0 else 0, vloer ] | max %}
                   {% set beperkt = beperkt if beperkt < cap else cap %}
                   {{ beperkt | int }} watt —
               entity_id: input_select.zendure_2400_ac_modus_selecteren
